@@ -293,7 +293,7 @@ async function loadPbis(link, mine) {
   if (!ids.length) return [];
   const fields = [
     "System.Id", "System.Title", "System.State", "System.AssignedTo", "System.Description",
-    "Microsoft.VSTS.Common.AcceptanceCriteria",
+    "Microsoft.VSTS.Common.AcceptanceCriteria", "System.IterationPath", "System.AreaPath",
     "Microsoft.VSTS.Scheduling.Effort", "Microsoft.VSTS.Scheduling.StoryPoints",
   ].join(",");
   const got = await ado(link.org, `${project}/_apis/wit/workitems?ids=${ids.join(",")}&fields=${fields}&api-version=7.1`);
@@ -307,6 +307,8 @@ async function loadPbis(link, mine) {
       title: String(f["System.Title"] ?? ""),
       state: String(f["System.State"] ?? ""),
       assignedTo: f["System.AssignedTo"]?.displayName ?? "",
+      iteration: String(f["System.IterationPath"] ?? ""),
+      area: String(f["System.AreaPath"] ?? ""),
       effort: effort == null ? "" : String(effort),
       summary: short(description),
       description: description.slice(0, 4000),
@@ -552,8 +554,65 @@ export default class Pbis extends View {
       .child(div().text_size(10.5).font_medium().text_color(c).child(state));
   }
 
+  // ---------- iteration and area filters ----------
+
+  // Per space: { iteration, area }, each a path or "" for all.
+  filters(space) {
+    try { return { iteration: "", area: "", ...JSON.parse(localStorage.getItem(`pbis.filter.${space.id}`) ?? "{}") }; }
+    catch { return { iteration: "", area: "" }; }
+  }
+
+  setFilter(space, facet, value, cx) {
+    const next = { ...this.filters(space), [facet]: value };
+    localStorage.setItem(`pbis.filter.${space.id}`, JSON.stringify(next));
+    this.facetOpen = null;
+    cx.notify();
+  }
+
+  // A path matches itself and everything under it.
+  static under(path, chosen) {
+    return !chosen || path === chosen || path.startsWith(chosen + "\\");
+  }
+
+  static pathLabel(path, facet) {
+    const i = path.indexOf("\\");
+    if (i < 0) return facet === "iteration" ? "No iteration (backlog)" : `${path} (root)`;
+    return path.slice(i + 1);
+  }
+
+  facetButton(space, facet, title, value, t) {
+    const open = this.facetOpen === facet;
+    const label = value ? Pbis.pathLabel(value, facet).split("\\").pop() : "All";
+    return div().id(`pbis-facet-${facet}`).h(26).px(8).flex().flex_1().min_w(0).gap(4).items_center().rounded(7)
+      .text_size(11.5).cursor_pointer().border_1()
+      .border_color(value || open ? t.accent : t.border).bg(value ? t.selected : t.raised)
+      .hover((s) => s.opacity(0.88))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { this.facetOpen = open ? null : facet; cx.notify(); })
+      .child(div().flex_none().text_color(t.dim).child(title))
+      .child(div().flex_1().min_w(0).truncate().text_color(value ? t.accent : t.foreground).child(label))
+      .child(div().flex_none().text_color(t.dim).child(open ? "▴" : "▾"));
+  }
+
+  facetList(space, facet, items, chosen, t) {
+    const counts = new Map();
+    for (const p of items) counts.set(p[facet], (counts.get(p[facet]) ?? 0) + 1);
+    const paths = [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    if (chosen && !counts.has(chosen)) paths.unshift(chosen);
+    const row = (key, label, count, on, value) => h_flex().id(`pbis-${facet}-${key}`).h(26).flex_none().px(8).gap(8)
+      .items_center().rounded(6).cursor_pointer().bg(on ? t.selected : t.surface).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => this.setFilter(space, facet, value, cx))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(on ? t.accent : t.foreground).child(label))
+      .child(div().flex_none().text_size(10.5).text_color(t.dim).child(String(count)));
+    return div().flex_none().max_h(220).relative().mx(14).mb(8).rounded(8).border_1().border_color(t.border).bg(t.surface)
+      .child(v_flex().id(`pbis-${facet}-list`).max_h(218).overflow_y_scroll().p(4).gap(1)
+        .child(row("all", facet === "iteration" ? "All iterations" : "All areas", items.length, !chosen, ""))
+        .children(paths.map((path, i) => row(i, Pbis.pathLabel(path, facet), counts.get(path) ?? 0, path === chosen, path))));
+  }
+
   card(p, t, space, link) {
-    const meta = [p.effort && `${p.effort} pts`, p.assignedTo].filter(Boolean).join(" · ");
+    const sprint = p.iteration.includes("\\") ? p.iteration.split("\\").pop() : "";
+    const meta = [p.effort && `${p.effort} pts`, p.assignedTo, sprint].filter(Boolean).join(" · ");
     return v_flex().id(`pbi-${p.id}`).flex_none().p(10).gap(4).rounded(9).border_1().border_color(t.border).bg(t.surface)
       .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => cx.open_url(p.url))
       .child(h_flex().gap(6).items_center()
@@ -586,9 +645,15 @@ export default class Pbis extends View {
     const time = entry.at ? new Date(entry.at).toTimeString().slice(0, 5) : "";
     const tenant = tenants[link.org];
     const user = tenant !== undefined ? authStore?.[authority(tenant)]?.user : "";
+    const chosen = this.filters(space);
+    const inIteration = entry.items.filter((p) => Pbis.under(p.iteration, chosen.iteration));
+    const inArea = entry.items.filter((p) => Pbis.under(p.area, chosen.area));
+    const shown = inIteration.filter((p) => Pbis.under(p.area, chosen.area));
+    const filtered = Boolean(chosen.iteration || chosen.area);
+    const count = filtered ? `${shown.length} of ${entry.items.length}` : `${entry.items.length}`;
 
     return root
-      .child(header.child(div().text_size(11).text_color(t.dim).child(entry.loading ? "loading…" : `${entry.items.length}${time ? ` · ${time}` : ""}`)))
+      .child(header.child(div().text_size(11).text_color(t.dim).child(entry.loading ? "loading…" : `${count}${time ? ` · ${time}` : ""}`)))
       .child(h_flex().flex_none().px(14).py(8).gap(6).border_b(1).border_color(t.border)
         .child(this.button("pbis-refresh", "Refresh", t, (_e, cx) => this.refresh(cx, true)))
         .child(this.button("pbis-mine", "Assigned to me", t, (_e, cx) => {
@@ -599,6 +664,12 @@ export default class Pbis extends View {
         }, this.mine ? "on" : undefined))
         .child(div().flex_1())
         .child(this.button("pbis-unlink", "Unlink", t, (_e, cx) => this.unlink(cx))))
+      .child(h_flex().flex_none().px(14).pt(8).pb(this.facetOpen ? 6 : 8).gap(6)
+        .when(!this.facetOpen, (el) => el.border_b(1).border_color(t.border))
+        .child(this.facetButton(space, "iteration", "Iteration", chosen.iteration, t))
+        .child(this.facetButton(space, "area", "Area", chosen.area, t)))
+      .when(this.facetOpen === "iteration", (el) => el.child(this.facetList(space, "iteration", inArea, chosen.iteration, t)))
+      .when(this.facetOpen === "area", (el) => el.child(this.facetList(space, "area", inIteration, chosen.area, t)))
       .when(Boolean(user), (el) => el.child(h_flex().flex_none().px(14).py(4).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(`Signed in as ${user}`))
         .child(div().id("pbis-signout").text_size(10.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
@@ -609,9 +680,10 @@ export default class Pbis extends View {
       .when(Boolean(entry.error) && entry.needsLogin === undefined, (el) => el.child(div().px(14).py(8).text_size(11.5).text_color(t.ansi1).child(entry.error)))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("pbis-list").absolute().inset_0().overflow_y_scroll().p(10).gap(8)
-          .children(entry.items.map((p) => this.card(p, t, space, link)))
-          .when(!entry.loading && !entry.error && !entry.items.length, (el) => el.child(div().text_color(t.dim)
-            .child(this.mine ? "No open PBIs assigned to you." : "No open PBIs."))))
+          .children(shown.map((p) => this.card(p, t, space, link)))
+          .when(!entry.loading && !entry.error && !shown.length, (el) => el.child(div().text_color(t.dim)
+            .child(filtered ? "No open PBIs match these filters."
+              : this.mine ? "No open PBIs assigned to you." : "No open PBIs."))))
         .child(Scrollbar.vertical("pbis-list").absolute().inset_0()));
   }
 }
