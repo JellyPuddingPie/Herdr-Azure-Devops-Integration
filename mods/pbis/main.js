@@ -603,12 +603,23 @@ export default class Pbis extends View {
       .child(div().text_size(10.5).font_medium().text_color(c).child(state));
   }
 
-  // ---------- iteration and area filters ----------
+  // ---------- iteration, area and status filters ----------
 
-  // Per space: { iteration, area }, each a path or "" for all.
+  // Per space: { iteration, area, state }, each a value or "" for all.
   filters(space) {
-    try { return { iteration: "", area: "", ...JSON.parse(localStorage.getItem(`pbis.filter.${space.id}`) ?? "{}") }; }
-    catch { return { iteration: "", area: "" }; }
+    const none = { iteration: "", area: "", state: "" };
+    try { return { ...none, ...JSON.parse(localStorage.getItem(`pbis.filter.${space.id}`) ?? "{}") }; }
+    catch { return none; }
+  }
+
+  // Paths match themselves and everything under them; a status matches itself.
+  static matches(p, facet, chosen) {
+    return facet === "state" ? !chosen || p.state === chosen : Pbis.under(p[facet], chosen);
+  }
+
+  // The items that pass every filter except `skip`.
+  static passing(items, chosen, skip) {
+    return items.filter((p) => ["iteration", "area", "state"].every((f) => f === skip || Pbis.matches(p, f, chosen[f])));
   }
 
   setFilter(space, facet, value, cx) {
@@ -624,6 +635,7 @@ export default class Pbis extends View {
   }
 
   static pathLabel(path, facet) {
+    if (facet === "state") return path;
     const i = path.indexOf("\\");
     if (i < 0) return facet === "iteration" ? "No iteration (backlog)" : `${path} (root)`;
     return path.slice(i + 1);
@@ -646,7 +658,10 @@ export default class Pbis extends View {
   facetList(space, facet, items, chosen, t) {
     const counts = new Map();
     for (const p of items) counts.set(p[facet], (counts.get(p[facet]) ?? 0) + 1);
-    const paths = [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    // Statuses in workflow order where known; paths by name.
+    const ORDER = ["new", "to do", "approved", "ready", "committed", "active", "in progress", "doing", "ready for testing", "testing", "resolved", "on hold", "blocked"];
+    const rank = (v) => { const i = ORDER.indexOf(v.toLowerCase()); return i < 0 ? ORDER.length : i; };
+    const paths = [...counts.keys()].sort((a, b) => (facet === "state" ? rank(a) - rank(b) : 0) || a.localeCompare(b, undefined, { numeric: true }));
     if (chosen && !counts.has(chosen)) paths.unshift(chosen);
     const row = (key, label, count, on, value) => h_flex().id(`pbis-${facet}-${key}`).h(26).flex_none().px(8).gap(8)
       .items_center().rounded(6).cursor_pointer().bg(on ? t.selected : t.surface).hover((s) => s.bg(t.hover))
@@ -655,7 +670,7 @@ export default class Pbis extends View {
       .child(div().flex_none().text_size(10.5).text_color(t.dim).child(String(count)));
     return div().flex_none().max_h(220).relative().mx(14).mb(8).rounded(8).border_1().border_color(t.border).bg(t.surface)
       .child(v_flex().id(`pbis-${facet}-list`).max_h(218).overflow_y_scroll().p(4).gap(1)
-        .child(row("all", facet === "iteration" ? "All iterations" : "All areas", items.length, !chosen, ""))
+        .child(row("all", { iteration: "All iterations", area: "All areas", state: "All statuses" }[facet], items.length, !chosen, ""))
         .children(paths.map((path, i) => row(i, Pbis.pathLabel(path, facet), counts.get(path) ?? 0, path === chosen, path))));
   }
 
@@ -696,10 +711,8 @@ export default class Pbis extends View {
     const tenant = tenants[link.org];
     const user = tenant !== undefined ? authStore?.[authority(tenant)]?.user : "";
     const chosen = this.filters(space);
-    const inIteration = entry.items.filter((p) => Pbis.under(p.iteration, chosen.iteration));
-    const inArea = entry.items.filter((p) => Pbis.under(p.area, chosen.area));
-    const shown = inIteration.filter((p) => Pbis.under(p.area, chosen.area));
-    const filtered = Boolean(chosen.iteration || chosen.area);
+    const shown = Pbis.passing(entry.items, chosen, null);
+    const filtered = Boolean(chosen.iteration || chosen.area || chosen.state);
     const count = filtered ? `${shown.length} of ${entry.items.length}` : `${entry.items.length}`;
 
     return root
@@ -717,9 +730,10 @@ export default class Pbis extends View {
       .child(h_flex().flex_none().px(14).pt(8).pb(this.facetOpen ? 6 : 8).gap(6)
         .when(!this.facetOpen, (el) => el.border_b(1).border_color(t.border))
         .child(this.facetButton(space, "iteration", "Iteration", chosen.iteration, t))
-        .child(this.facetButton(space, "area", "Area", chosen.area, t)))
-      .when(this.facetOpen === "iteration", (el) => el.child(this.facetList(space, "iteration", inArea, chosen.iteration, t)))
-      .when(this.facetOpen === "area", (el) => el.child(this.facetList(space, "area", inIteration, chosen.area, t)))
+        .child(this.facetButton(space, "area", "Area", chosen.area, t))
+        .child(this.facetButton(space, "state", "Status", chosen.state, t)))
+      .when(Boolean(this.facetOpen), (el) => el.child(this.facetList(space, this.facetOpen,
+        Pbis.passing(entry.items, chosen, this.facetOpen), chosen[this.facetOpen], t)))
       .when(Boolean(user), (el) => el.child(h_flex().flex_none().px(14).py(4).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(`Signed in as ${user}`))
         .child(div().id("pbis-signout").text_size(10.5).text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
