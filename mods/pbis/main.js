@@ -2,7 +2,7 @@
 // Signs in with Microsoft's device code flow, per tenant; no Azure CLI.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, shared, exec, run, theme, appHome } from "herdr";
+import { spaces, shared, exec, run, notify, theme, appHome } from "herdr";
 import * as fs from "fs/promises";
 
 const LINKS = "pbis.links";
@@ -184,6 +184,96 @@ async function ado(org, path, body) {
   return data;
 }
 
+// HTML from Azure DevOps as readable text: paragraphs, line breaks and list items kept.
+function text(html) {
+  return String(html ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "\n- ")
+    .replace(/<\/(p|div|h[1-6]|tr|ul|ol)>/gi, "\n")
+    .replace(/<\/t[dh]>/gi, " | ")
+    .replace(/<img[^>]*src="([^"]+)"[^>]*>/gi, " [image: $1] ")
+    .replace(/<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gi, "$2 ($1)")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// The whole work item as Markdown, for an agent that cannot reach Azure DevOps itself.
+async function pbiMarkdown(link, id) {
+  const project = encodeURIComponent(link.project);
+  const w = await ado(link.org, `${project}/_apis/wit/workitems/${id}?$expand=relations&api-version=7.1`);
+  const f = w.fields ?? {};
+  const out = [`# ${f["System.WorkItemType"] ?? "Work item"} ${id}: ${f["System.Title"] ?? ""}`, ""];
+  const facts = [
+    ["Organization", orgName(link.org)], ["Project", link.project],
+    ["State", f["System.State"]], ["Reason", f["System.Reason"]],
+    ["Assigned to", f["System.AssignedTo"]?.displayName],
+    ["Effort", f["Microsoft.VSTS.Scheduling.Effort"] ?? f["Microsoft.VSTS.Scheduling.StoryPoints"]],
+    ["Priority", f["Microsoft.VSTS.Common.Priority"]],
+    ["Area", f["System.AreaPath"]], ["Iteration", f["System.IterationPath"]],
+    ["Tags", f["System.Tags"]], ["Created by", f["System.CreatedBy"]?.displayName],
+    ["Changed", f["System.ChangedDate"]], ["Link", `${link.org}/${project}/_workitems/edit/${id}`],
+  ];
+  for (const [k, v] of facts) if (v != null && v !== "") out.push(`- **${k}:** ${v}`);
+  const sections = [
+    ["Description", "System.Description"],
+    ["Acceptance criteria", "Microsoft.VSTS.Common.AcceptanceCriteria"],
+    ["Repro steps", "Microsoft.VSTS.TCM.ReproSteps"],
+    ["System info", "Microsoft.VSTS.TCM.SystemInfo"],
+  ];
+  for (const [title, field] of sections) {
+    const body = text(f[field]);
+    if (body) out.push("", `## ${title}`, "", body);
+  }
+  // Other text fields that hold HTML, such as custom ones.
+  for (const [k, v] of Object.entries(f)) {
+    if (sections.some(([, field]) => field === k) || typeof v !== "string" || !/<\w+[^>]*>/.test(v)) continue;
+    const body = text(v);
+    if (body) out.push("", `## ${k}`, "", body);
+  }
+
+  const rels = w.relations ?? [];
+  const idOf = (url) => Number(String(url).split("/").pop());
+  const related = rels.filter((r) => /^System\.LinkTypes\./.test(r.rel));
+  if (related.length) {
+    const ids = [...new Set(related.map((r) => idOf(r.url)).filter(Boolean))].slice(0, 200);
+    const got = await ado(link.org, `_apis/wit/workitems?ids=${ids.join(",")}&fields=System.Title,System.State,System.WorkItemType&errorPolicy=omit&api-version=7.1`).catch(() => ({ value: [] }));
+    const byId = new Map((got.value ?? []).filter(Boolean).map((x) => [x.id, x.fields ?? {}]));
+    const kinds = {
+      "System.LinkTypes.Hierarchy-Reverse": "Parent", "System.LinkTypes.Hierarchy-Forward": "Child",
+      "System.LinkTypes.Related": "Related", "System.LinkTypes.Dependency-Forward": "Successor",
+      "System.LinkTypes.Dependency-Reverse": "Predecessor",
+    };
+    out.push("", "## Linked work items", "");
+    for (const r of related) {
+      const x = byId.get(idOf(r.url)) ?? {};
+      const kind = kinds[r.rel] ?? r.rel.replace(/^System\.LinkTypes\./, "");
+      out.push(`- ${kind}: ${x["System.WorkItemType"] ?? ""} ${idOf(r.url)} ${x["System.Title"] ?? ""} (${x["System.State"] ?? "?"})`);
+    }
+  }
+  const files = rels.filter((r) => r.rel === "AttachedFile");
+  if (files.length) {
+    out.push("", "## Attachments", "");
+    for (const r of files) out.push(`- ${r.attributes?.name ?? "file"}: ${r.url}`);
+  }
+  const hyperlinks = rels.filter((r) => r.rel === "Hyperlink" || r.rel === "ArtifactLink");
+  if (hyperlinks.length) {
+    out.push("", "## Links", "");
+    for (const r of hyperlinks) out.push(`- ${r.attributes?.name ?? r.rel}: ${r.url}`);
+  }
+
+  const c = await ado(link.org, `${project}/_apis/wit/workItems/${id}/comments?$top=100&order=asc&api-version=7.1-preview.4`).catch(() => null);
+  const comments = c?.comments ?? [];
+  if (comments.length) {
+    out.push("", "## Comments", "");
+    for (const m of comments) {
+      out.push(`### ${m.createdBy?.displayName ?? "?"}, ${String(m.createdDate ?? "").slice(0, 16).replace("T", " ")}`, "", text(m.text), "");
+    }
+  }
+  return out.join("\n").trim() + "\n";
+}
+
 async function listProjects(org) {
   const data = await ado(org, "_apis/projects?$top=1000&api-version=7.1");
   return (data.value ?? []).map((p) => p.name).sort((a, b) => a.localeCompare(b));
@@ -231,6 +321,7 @@ async function loadPbis(link, mine) {
 export default class Pbis extends View {
   init(_props, cx) {
     this.cache = {};
+    this.starting = {};
     this.mine = localStorage.getItem("pbis.mine") === "1";
     this.connect = null; // the organization step: { org, loading, error, needsLogin, projects }
     this.login = null; // a device code sign-in: { tenant, code, uri, error, then }
@@ -351,9 +442,32 @@ export default class Pbis extends View {
     cx.spawn(async (cx) => { await saveLinks(next); cx.notify(); });
   }
 
-  startAgent(p, space) {
-    const task = `Work on Azure DevOps PBI #${p.id}: ${p.title}\n\n${p.description}\n\n${p.url}`;
-    run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude"], task });
+  // Reads the whole PBI here, where the panel is signed in, and hands the agent a file.
+  startAgent(p, space, link, cx) {
+    if (this.starting[p.id]) return;
+    this.starting[p.id] = true;
+    cx.spawn(async (cx) => {
+      try {
+        const md = await pbiMarkdown(link, p.id);
+        const dir = `${appHome()}/data/pbis-items`;
+        try { await fs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
+        const file = `${dir}/${orgName(link.org)}-${p.id}.md`;
+        await fs.writeFile(file, md);
+        const task = [
+          `Work on Azure DevOps PBI #${p.id}: ${p.title}`,
+          "",
+          `The full PBI (fields, acceptance criteria, comments, linked items) is in this file. Read it first: ${file}`,
+          `You do not need to sign in to Azure DevOps to read it. Link: ${p.url}`,
+        ].join("\n");
+        run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude"], task });
+      } catch (e) {
+        notify({ title: `Could not read PBI #${p.id}`, body: String(e?.message ?? e), level: "error" });
+      } finally {
+        delete this.starting[p.id];
+        cx.notify();
+      }
+    });
+    cx.notify();
   }
 
   // ---------- drawing ----------
@@ -438,7 +552,7 @@ export default class Pbis extends View {
       .child(div().text_size(10.5).font_medium().text_color(c).child(state));
   }
 
-  card(p, t, space) {
+  card(p, t, space, link) {
     const meta = [p.effort && `${p.effort} pts`, p.assignedTo].filter(Boolean).join(" · ");
     return v_flex().id(`pbi-${p.id}`).flex_none().p(10).gap(4).rounded(9).border_1().border_color(t.border).bg(t.surface)
       .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => cx.open_url(p.url))
@@ -448,8 +562,8 @@ export default class Pbis extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(meta))
         .child(div().id(`pbi-run-${p.id}`).px(6).py(1).rounded(5).text_size(10.5).text_color(t.muted)
           .border_1().border_color(t.border).hover((s) => s.bg(t.raised).text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.startAgent(p, space); })
-          .child("Start agent")))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.startAgent(p, space, link, cx); })
+          .child(this.starting[p.id] ? "Reading…" : "Start agent")))
       .child(div().text_size(13).font_semibold().text_color(t.foreground).child(p.title))
       .child(div().text_size(11.5).text_color(t.muted).child(p.summary || "No description."));
   }
@@ -495,7 +609,7 @@ export default class Pbis extends View {
       .when(Boolean(entry.error) && entry.needsLogin === undefined, (el) => el.child(div().px(14).py(8).text_size(11.5).text_color(t.ansi1).child(entry.error)))
       .child(div().flex_1().min_h(0).relative()
         .child(v_flex().id("pbis-list").absolute().inset_0().overflow_y_scroll().p(10).gap(8)
-          .children(entry.items.map((p) => this.card(p, t, space)))
+          .children(entry.items.map((p) => this.card(p, t, space, link)))
           .when(!entry.loading && !entry.error && !entry.items.length, (el) => el.child(div().text_color(t.dim)
             .child(this.mine ? "No open PBIs assigned to you." : "No open PBIs."))))
         .child(Scrollbar.vertical("pbis-list").absolute().inset_0()));

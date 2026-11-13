@@ -29,7 +29,7 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - **Description:** the Description field as plain text. When it is empty, the Acceptance Criteria field.
 - **Refresh:** every 5 minutes, and with the Refresh button.
 - **Click a card:** opens the work item in the browser.
-- **Start agent:** runs `tab.new` with `argv: ["claude"]`, the tab named `#<id>`, and a task with the ID, title, description and URL.
+- **Start agent:** the button reads "Reading…" while the panel fetches the whole work item: all fields, every text field that holds HTML (as plain text with line breaks and list items), linked work items with type and state, attachments, links and up to 100 comments. It writes that as Markdown to `data/pbis-items/<org>-<id>.md` under the app home. Then it runs `tab.new` with `argv: ["claude"]`, the tab named `#<id>`, and a short task that names the file. The agent needs no Azure DevOps sign-in of its own. On an error the panel posts a `notify` toast.
 - **Sign-in:** Microsoft device code flow, one sign-in per tenant. The panel shows a code, puts it on the clipboard and opens the Microsoft page. It polls until the person signs in. Then it reloads.
 - **Agent status:** the panel does not show agent status. The tab bar shows it as in `main`.
 
@@ -39,7 +39,7 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - Mod `tabs-pbis`: a clone of the shipped `tabs` mod (`mod.clone`). Two changes: `enabled` always includes `"pbis"`, and a third `panelButton("pbis", "PBIs", "mods/pbis/pbis.svg")` after Changes.
 - Mod `pbis` (`main.js`, `mod.json` with `"place": "none"`, `pbis.svg`).
   - `herdr` functions: `spaces`, `exec`, `run`, `theme`, `appHome`, `shared` (only to take over links from an older version).
-  - Commands: `tab.new`.
+  - Commands: `tab.new`. Also `notify` for errors of Start agent.
   - Network: `fetch` to `login.microsoftonline.com` (device code and token endpoints) and to `dev.azure.com` (projects, WIQL, work items, API version 7.1).
   - Programs: `curl`, once per organization, to read the `X-VSS-ResourceTenant` header of an anonymous request. That header names the tenant.
   - Client ID `872cd9fa-d31f-45e0-9eab-6e460a02d1f1` (Microsoft's public client for Visual Studio). Scope `499b84ac-1321-427f-aa17-267ca6975798/.default offline_access openid profile`.
@@ -55,6 +55,7 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - `fetch` responses have no headers, which is why the tenant lookup uses `curl`.
 - `tabs-pbis` is a clone. It does not get updates of Herdr's own tab bar.
 - `data/pbis-auth.json` holds refresh tokens. Never share or commit it.
+- An agent started in a terminal has no Azure DevOps sign-in. Do not pass only a link or a short summary: write the whole PBI to a file first.
 
 ## Done when
 
