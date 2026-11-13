@@ -1,8 +1,8 @@
 // Azure DevOps PBIs of the project linked to the shown space, as cards.
 // Signs in with Microsoft's device code flow, per tenant; no Azure CLI.
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { spaces, shared, exec, run, notify, theme, appHome } from "herdr";
+import { v_flex, h_flex, InputState, Input, Scrollbar, TextView } from "gpui-base";
+import { spaces, shared, exec, run, notify, theme, appHome, props, openOverlay, closeOverlay } from "herdr";
 import * as fs from "fs/promises";
 
 const LINKS = "pbis.links";
@@ -332,8 +332,56 @@ export default class Pbis extends View {
     this.filterInput = InputState.new({ placeholder: "Filter projects" });
     this.filter = "";
     this.filterInput.on("change", (_e, cx) => { this.filter = this.filterInput.value(); cx.notify(); });
+    // This copy is a dialog with one PBI (opened from a card): load it and stop.
+    const detail = props()?.detail;
+    if (detail) {
+      this.detail = { ...detail, loading: true, md: "", error: "" };
+      cx.spawn(async (cx) => {
+        try { this.detail.md = await pbiMarkdown({ org: detail.org, project: detail.project }, detail.id); }
+        catch (e) { this.detail.error = String(e?.message ?? e); }
+        this.detail.loading = false;
+        cx.notify();
+      });
+      return;
+    }
     cx.timer.every(REFRESH_MS, (cx) => this.refresh(cx, true));
     cx.spawn(async (cx) => { await readLinks(); await readAuth(); this.ready = true; cx.notify(); });
+  }
+
+  openDetail(p, space, link) {
+    openOverlay({
+      mod: "pbis", kind: "dialog", width: 0.62, height: 0.86,
+      props: { detail: { org: link.org, project: link.project, space: space.id, id: p.id, title: p.title, state: p.state, url: p.url } },
+    });
+  }
+
+  renderDetail(t) {
+    const d = this.detail;
+    const p = { id: d.id, title: d.title, url: d.url };
+    const close = () => closeOverlay(props().overlay);
+    const body = d.loading
+      ? div().p(18).text_color(t.dim).child("Reading the PBI…")
+      : d.error
+        ? div().p(18).text_size(12).text_color(t.ansi1).child(d.error)
+        // The first line repeats the title shown above: leave it out.
+        : div().id("pbis-detail-scroll").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(14).text_size(13)
+          .child(TextView.markdown("pbis-detail-md", d.md.replace(/^# .*\n+/, "")).selectable(true));
+    return v_flex().id("pbis-detail").size_full().min_h(0).bg(t.popover).text_color(t.foreground)
+      .child(v_flex().flex_none().px(20).pt(16).pb(12).gap(8).border_b(1).border_color(t.border)
+        .child(h_flex().gap(8).items_center()
+          .child(div().text_size(12).font_semibold().text_color(t.accent).child(`#${d.id}`))
+          .when(Boolean(d.state), (el) => el.child(this.status(d.state, t)))
+          .child(div().flex_1())
+          .child(div().text_size(11).text_color(t.dim).child("Esc")))
+        .child(div().text_size(16).font_semibold().child(d.title))
+        .child(h_flex().gap(6)
+          .child(this.button("pbis-detail-agent", this.starting[d.id] ? "Reading…" : "Start agent", t, (_e, cx) => {
+            this.startAgent(p, { id: d.space }, { org: d.org, project: d.project }, cx, close);
+          }, "primary"))
+          .child(this.button("pbis-detail-open", "Open in DevOps", t, (_e, cx) => cx.open_url(d.url)))
+          .child(div().flex_1())
+          .child(this.button("pbis-detail-close", "Close", t, close))))
+      .child(body);
   }
 
   current() {
@@ -445,7 +493,7 @@ export default class Pbis extends View {
   }
 
   // Reads the whole PBI here, where the panel is signed in, and hands the agent a file.
-  startAgent(p, space, link, cx) {
+  startAgent(p, space, link, cx, after) {
     if (this.starting[p.id]) return;
     this.starting[p.id] = true;
     cx.spawn(async (cx) => {
@@ -462,6 +510,7 @@ export default class Pbis extends View {
           `You do not need to sign in to Azure DevOps to read it. Link: ${p.url}`,
         ].join("\n");
         run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude"], task });
+        after?.();
       } catch (e) {
         notify({ title: `Could not read PBI #${p.id}`, body: String(e?.message ?? e), level: "error" });
       } finally {
@@ -614,7 +663,7 @@ export default class Pbis extends View {
     const sprint = p.iteration.includes("\\") ? p.iteration.split("\\").pop() : "";
     const meta = [p.effort && `${p.effort} pts`, p.assignedTo, sprint].filter(Boolean).join(" · ");
     return v_flex().id(`pbi-${p.id}`).flex_none().p(10).gap(4).rounded(9).border_1().border_color(t.border).bg(t.surface)
-      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => cx.open_url(p.url))
+      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.openDetail(p, space, link))
       .child(h_flex().gap(6).items_center()
         .child(div().text_size(11).font_semibold().text_color(t.accent).child(`#${p.id}`))
         .when(Boolean(p.state), (el) => el.child(this.status(p.state, t)))
@@ -629,6 +678,7 @@ export default class Pbis extends View {
 
   render(cx) {
     const t = theme();
+    if (this.detail) return this.renderDetail(t);
     const { space, link } = this.current();
     const root = v_flex().id("pbis").size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(13);
     if (!space) return root.child(div().p(14).text_color(t.dim).child("No space."));
