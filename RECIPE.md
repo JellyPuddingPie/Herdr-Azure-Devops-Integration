@@ -31,7 +31,7 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - **Description:** the Description field as plain text. When it is empty, the Acceptance Criteria field.
 - **Refresh:** every 5 minutes, and with the Refresh button.
 - **Click a card:** opens a dialog (`openOverlay`, `kind: "dialog"`, 62% wide, 86% high) of the same `pbis` mod, with `props.detail` = `{ org, project, space, id, title, state, url }`. A copy with `props.detail` draws only the dialog and starts no timers. The dialog shows `#<id>`, the status pill and the title, then **Start agent** (primary), **Open in DevOps** and **Close**. Below, in a scrolling area, the whole PBI as Markdown (`TextView.markdown`, selectable): the same text the agent gets. Esc closes it. Start agent closes the dialog only after the tab is opened, because closing a copy cancels its tasks.
-- **Start agent:** the button reads "Reading…" while the panel fetches the whole work item: all fields, every text field that holds HTML (as plain text with line breaks and list items), linked work items with type and state, attachments, links and up to 100 comments. It writes that as Markdown to `data/pbis-items/<org>-<id>.md` under the app home. Then it runs `tab.new` with `argv: ["claude"]`, the tab named `#<id>`, and a short task that names the file. The agent needs no Azure DevOps sign-in of its own. On an error the panel posts a `notify` toast.
+- **Start agent:** the button reads "Reading…" while the panel fetches the whole work item: all fields, every text field that holds HTML (as plain text with line breaks and list items), linked work items with type and state, attachments, links and up to 100 comments. It writes that as Markdown to `data/pbis-items/<org>-<id>.md` under the app home. Then it runs `tab.new` with `argv: ["claude", "--permission-mode", "plan"]` (Claude Code starts in plan mode), the tab named `#<id>`, and a short task that names the file. The agent needs no Azure DevOps sign-in of its own. On an error the panel posts a `notify` toast.
 - **Sign-in:** Microsoft device code flow, one sign-in per tenant. The panel shows a code, puts it on the clipboard and opens the Microsoft page. It polls until the person signs in. Then it reloads.
 - **Agent status:** the panel does not show agent status. The tab bar shows it as in `main`.
 
@@ -67,4 +67,4 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - Without a sign-in, the panel offers **Sign in with Microsoft**. After the sign-in, the cards load without a restart.
 - Switching to another linked space shows that project's PBIs.
 - **Assigned to me** shows only the person's items, and the button stays highlighted while it is on.
-- **Start agent** opens a new tab named `#<id>` with Claude Code working on that PBI.
+- **Start agent** opens a new tab named `#<id>` with Claude Code in plan mode, working on that PBI.

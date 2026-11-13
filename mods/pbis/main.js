@@ -509,7 +509,7 @@ export default class Pbis extends View {
           `The full PBI (fields, acceptance criteria, comments, linked items) is in this file. Read it first: ${file}`,
           `You do not need to sign in to Azure DevOps to read it. Link: ${p.url}`,
         ].join("\n");
-        run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude"], task });
+        run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude", "--permission-mode", "plan"], task });
         after?.();
       } catch (e) {
         notify({ title: `Could not read PBI #${p.id}`, body: String(e?.message ?? e), level: "error" });
