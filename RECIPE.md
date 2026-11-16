@@ -46,7 +46,9 @@ Screens:
 - **Board, Tree view (default):** a diagram, left to right. A **Plan** node (accent border, the plan name and the project) links to one node per Feature, and each Feature links to its PBI nodes. The links are curved arrows (`PathBuilder` cubic Bézier with a filled arrowhead, painted with `window.paint_path` under the nodes). The color of a link shows the state of its target: gray New, green Created, red Failed, and a dashed blue line to an existing Feature. A legend at the top right explains this. Nodes have a fixed size: Plan 210 × 96, Feature 270 × 104, PBI 330 × 112. Each Feature is centered on its PBIs. A **+ PBI** button sits under each group and **+ Feature** at the bottom. The canvas scrolls both ways.
 - **Board, Columns view:** one 300 px column per Feature, side by side, scrolling sideways. The column head shows "FEATURE" (or "★ FEATURE" for an existing one), a pill and the title. Under it the PBI cards. A **+ PBI** button ends each column, and a **+ Feature** button follows the last column.
 - Both views: a node or card shows a pill (New, Created #id, Existing #id or Failed), the number of acceptance criteria, the effort, the title and the first line of the description. A **Tree / Columns** switch sits above the board and is kept in `localStorage` (`planner.view`). The header has **All plans**, **Redraft** and **Create N items in DevOps**.
-- **Item:** title, description, acceptance criteria (one per line), effort, tags and a row of Feature buttons to move the PBI. **Delete**, **Back** and **Save**. A Feature has only title and description.
+- **Item:** title, description, assignee, acceptance criteria (one per line), effort, tags and a row of Feature buttons to move the PBI. **Delete**, **Back** and **Save**. A Feature has title, description and assignee.
+- **Assignee:** a row of chips: **Me (name)**, **Unassigned**, a search box, and the team members (at most 40 shown, the search box narrows them). **Me** comes from `_apis/connectionData` (the `Account` property), else from the user in the sign-in file. Team members are the members of every team of the project (`_apis/projects/{project}/teams`, then `.../teams/{id}/members`), without groups, deduplicated by unique name. They load once per dialog. The plan stores `assignedTo: { name, unique }`.
+- **Assign all…:** a button next to the view switch, shown while items are left to create. It opens the same chips. A pick sets the assignee of every Feature and PBI without an ID. Created and existing items keep theirs.
 
 Drafting:
 
@@ -59,7 +61,7 @@ Drafting:
 Creating:
 
 - The work item type comes from the project: `Product Backlog Item` (effort in `Effort`), else `User Story` (`StoryPoints`), else `Requirement` (`Size`).
-- First every new Feature, then every PBI with a `System.LinkTypes.Hierarchy-Reverse` relation to its Feature. `POST {project}/_apis/wit/workitems/${type}` with `application/json-patch+json`. Description and acceptance criteria are sent as HTML. Area and iteration are the project defaults.
+- First every new Feature, then every PBI with a `System.LinkTypes.Hierarchy-Reverse` relation to its Feature. `POST {project}/_apis/wit/workitems/${type}` with `application/json-patch+json`. Description and acceptance criteria are sent as HTML. `System.AssignedTo` gets the unique name of the assignee. Area and iteration are the project defaults.
 - After each item the plan file is saved with the new ID. An error on one item marks that card red and the rest go on. Create again skips items that have an ID.
 - Plans live in `data/pbi-plans/<id>.json`, with a list in `data/pbi-plans/index.json`.
 

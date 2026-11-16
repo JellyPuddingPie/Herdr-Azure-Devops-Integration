@@ -71,6 +71,7 @@ function items(plan) {
 
 // ---------- helpers ----------
 
+const who = (it) => it.assignedTo ? `@ ${it.assignedTo.name}` : "";
 const orgName = (org) => org.replace(/^https:\/\/dev\.azure\.com\//, "");
 const form = (fields) => Object.entries(fields).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
 const short = (text, max = 140) => text.length > max ? text.slice(0, max - 1).trimEnd() + "…" : text;
@@ -190,6 +191,33 @@ async function backlogType(link) {
   throw new Error("This project has no Product Backlog Item or User Story type.");
 }
 
+// The signed-in user and the members of every team of the project, for "Assigned to".
+async function teamPeople(link) {
+  const project = encodeURIComponent(link.project);
+  let me = null;
+  try {
+    const c = await ado(link.org, "_apis/connectionData");
+    const u = c.authenticatedUser ?? {};
+    const unique = u.properties?.Account?.$value;
+    if (unique) me = { name: u.providerDisplayName || unique, unique };
+  } catch (e) { if (e instanceof NeedsLogin) throw e; }
+  const teams = (await ado(link.org, `_apis/projects/${project}/teams?$top=50&api-version=7.1`)).value ?? [];
+  const lists = await Promise.all(teams.slice(0, 25).map((tm) =>
+    ado(link.org, `_apis/projects/${project}/teams/${tm.id}/members?$top=500&api-version=7.1`).then((r) => r.value ?? [], () => [])));
+  const seen = new Map();
+  for (const m of lists.flat()) {
+    const id = m.identity ?? m;
+    if (!id?.uniqueName || id.isContainer || seen.has(id.uniqueName.toLowerCase())) continue;
+    seen.set(id.uniqueName.toLowerCase(), { name: id.displayName || id.uniqueName, unique: id.uniqueName });
+  }
+  const all = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  if (!me) {
+    const user = (await readAuth())[authority(await tenantOf(link.org))]?.user;
+    if (user) me = seen.get(user.toLowerCase()) ?? { name: user, unique: user };
+  }
+  return { me, all };
+}
+
 async function createItem(link, type, fields, parentId) {
   const ops = Object.entries(fields)
     .filter(([, v]) => v !== undefined && v !== null && v !== "")
@@ -297,6 +325,10 @@ export default class Planner extends View {
     this.confirm = false;
     this.nameInput = InputState.new({ placeholder: "Plan name, for example Webshop returns flow" });
     this.textInput = TextareaState.new({ placeholder: "Paste meeting notes, scope or requirements here", rows: 18 });
+    this.people = null; // { me, all } once loaded
+    this.assigning = false;
+    this.peopleQuery = InputState.new({ placeholder: "Search people" });
+    this.peopleQuery.on("change", (_e, cx) => cx.notify());
     cx.spawn(async (cx) => {
       this.link = await this.readLink();
       this.index = await readIndex();
@@ -405,7 +437,10 @@ export default class Planner extends View {
       ac: TextareaState.new({ value: (it.acceptanceCriteria ?? []).join("\n"), rows: 7, placeholder: "One acceptance criterion per line" }),
       effort: InputState.new({ value: it.effort ? String(it.effort) : "", placeholder: "Effort" }),
       tags: InputState.new({ value: (it.tags ?? []).join(", "), placeholder: "tag one, tag two" }),
+      assignee: it.assignedTo ?? null,
     };
+    this.peopleQuery.set_value("");
+    this.loadPeople(cx);
     this.screen = "item";
     cx.notify();
   }
@@ -427,6 +462,7 @@ export default class Planner extends View {
     const it = pi === null ? f : f.pbis[pi];
     it.title = this.f.title.value().trim() || it.title;
     it.description = this.f.description.value();
+    it.assignedTo = this.f.assignee;
     if (pi !== null) {
       it.acceptanceCriteria = this.f.ac.value().split("\n").map((s) => s.replace(/^\s*[-*•]\s*/, "").trim()).filter(Boolean);
       it.effort = Number(this.f.effort.value()) || null;
@@ -444,6 +480,24 @@ export default class Planner extends View {
     if (pi === null) this.plan.features.splice(fi, 1);
     else this.plan.features[fi].pbis.splice(pi, 1);
     this.backToBoard(cx);
+  }
+
+  loadPeople(cx) {
+    if (this.people || this.peopleLoading) return;
+    this.peopleLoading = true;
+    cx.spawn(async (cx) => {
+      try { this.people = await teamPeople(this.link); this.peopleError = ""; } catch (e) { this.peopleError = String(e?.message ?? e); }
+      this.peopleLoading = false;
+      cx.notify();
+    });
+  }
+
+  // Sets the assignee on every item that is not in DevOps yet. null clears it.
+  assignAll(person, cx) {
+    for (const { item } of items(this.plan)) if (!item.createdId && !item.existingId) item.assignedTo = person;
+    this.assigning = false;
+    cx.spawn(async (cx) => { await savePlan(this.plan); cx.notify(); });
+    cx.notify();
   }
 
   backToBoard(cx) {
@@ -466,7 +520,7 @@ export default class Planner extends View {
           if (f.existingId || f.createdId) continue;
           this.busy = `Creating Feature "${short(f.title, 40)}"…`; cx.notify();
           try {
-            f.createdId = await createItem(this.link, "Feature", { "System.Title": f.title, "System.Description": html(f.description) });
+            f.createdId = await createItem(this.link, "Feature", { "System.Title": f.title, "System.Description": html(f.description), "System.AssignedTo": f.assignedTo?.unique });
             f.failed = "";
           } catch (e) { if (e instanceof NeedsLogin) throw e; f.failed = String(e?.message ?? e); }
           await savePlan(plan); cx.notify();
@@ -484,6 +538,7 @@ export default class Planner extends View {
                 "Microsoft.VSTS.Common.AcceptanceCriteria": ac,
                 [kind.effort]: p.effort ?? undefined,
                 "System.Tags": p.tags.join("; "),
+                "System.AssignedTo": p.assignedTo?.unique,
               }, parent);
               p.failed = "";
             } catch (e) { if (e instanceof NeedsLogin) throw e; p.failed = String(e?.message ?? e); }
@@ -661,7 +716,7 @@ export default class Planner extends View {
 
   card(p, fi, pi, t) {
     const first = p.description.split("\n").find((l) => l.trim()) ?? "";
-    const meta = [`${p.acceptanceCriteria.length} AC`, p.effort && `effort ${p.effort}`, p.tags.join(", ")].filter(Boolean).join(" · ");
+    const meta = [`${p.acceptanceCriteria.length} AC`, p.effort && `effort ${p.effort}`, who(p), p.tags.join(", ")].filter(Boolean).join(" · ");
     return v_flex().id(`card-${p.key}`).flex_none().p(10).gap(5).rounded(9).border_1()
       .border_color(p.failed ? t.ansi1 : t.border).bg(t.surface).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.openItem(fi, pi, cx))
@@ -692,6 +747,33 @@ export default class Planner extends View {
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => this.addPbi(fi, cx)).child("+ PBI")))
         .child(Scrollbar.vertical(`col-list-${f.key}`).absolute().inset_0()));
+  }
+
+  // Me, Unassigned and the team members as chips, filtered by the search box.
+  peoplePicker(t, current, onPick, id) {
+    const chip = (key, label, person, strong) => {
+      const on = current !== undefined && (current?.unique ?? null) === (person?.unique ?? null);
+      return div().id(`${id}-${key}`).h(26).px(10).flex().flex_none().items_center().rounded(7).text_size(11.5).cursor_pointer()
+        .border_1().border_color(on ? t.accent : t.border).bg(on ? t.selected : t.raised)
+        .text_color(on ? t.accent : strong ? t.foreground : t.muted).hover((s) => s.bg(t.hover))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => onPick(person, cx)).child(label);
+    };
+    const box = v_flex().gap(8);
+    if (this.peopleLoading && !this.people) return box.child(div().text_size(11.5).text_color(t.dim).child("Loading team members…"));
+    const me = this.people?.me;
+    const q = this.peopleQuery.value().trim().toLowerCase();
+    const all = (this.people?.all ?? []).filter((p) => p.unique !== me?.unique)
+      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.unique.toLowerCase().includes(q));
+    return box
+      .child(h_flex().flex_wrap().gap(6)
+        .when(Boolean(me), (el) => el.child(chip("me", `Me (${short(me.name, 30)})`, me, true)))
+        .child(chip("none", "Unassigned", null, true))
+        .child(this.input(this.peopleQuery, t, 220)))
+      .when(Boolean(this.peopleError), (el) => el.child(div().text_size(11.5).text_color(t.ansi1).child(`Could not load team members: ${this.peopleError}`)))
+      .child(h_flex().flex_wrap().gap(6)
+        .children(all.slice(0, 40).map((p, i) => chip(`p${i}`, p.name, p)))
+        .when(all.length > 40, (el) => el.child(div().text_size(11).text_color(t.dim).child(`+${all.length - 40} more, search to narrow`))));
   }
 
   viewMode() {
@@ -768,10 +850,10 @@ export default class Planner extends View {
           .child(div().flex_1())
           .child(this.itemPill(f, t)))
         .child(div().text_size(13.5).font_semibold().child(short(f.title, 70)))
-        .child(div().text_size(11).text_color(t.dim).child(`${f.pbis.length} PBIs · ${f.pbis.reduce((n, p) => n + (p.effort || 0), 0)} effort`)));
+        .child(div().text_size(11).text_color(t.dim).child([`${f.pbis.length} PBIs`, `${f.pbis.reduce((n, p) => n + (p.effort || 0), 0)} effort`, who(f)].filter(Boolean).join(" · "))));
       for (const { p, pi, y: py } of pbis) {
         const first = p.description.split("\n").find((l) => l.trim()) ?? "";
-        const meta = [`${p.acceptanceCriteria.length} AC`, p.effort && `effort ${p.effort}`].filter(Boolean).join(" · ");
+        const meta = [`${p.acceptanceCriteria.length} AC`, p.effort && `effort ${p.effort}`, who(p)].filter(Boolean).join(" · ");
         nodes.push(at(v_flex().id(`tree-p-${p.key}`).p(10).gap(4).rounded(10).border_1().border_color(p.failed ? t.ansi1 : t.border).bg(t.surface)
           .overflow_hidden().cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openItem(fi, pi, cx)), PBI.x, py, PBI.w, PBI.h)
           .child(h_flex().gap(6).items_center()
@@ -832,10 +914,19 @@ export default class Planner extends View {
           .on_click((_e, cx) => { try { localStorage.setItem("planner.view", key); } catch { /* no storage */ } this.view = key; cx.notify(); })
           .child(label);
       }))
+      .when(todo.length > 0, (el) => el.child(div().id("assign-all").h(24).px(10).ml(10).flex().items_center().rounded(6).text_size(11.5).cursor_pointer()
+        .border_1().border_color(this.assigning ? t.accent : t.border).bg(this.assigning ? t.selected : t.raised)
+        .text_color(this.assigning ? t.accent : t.muted).hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { this.assigning = !this.assigning; this.peopleQuery.set_value(""); if (this.assigning) this.loadPeople(cx); cx.notify(); })
+        .child("Assign all…")))
       .child(div().flex_1())
       .child(this.legend(t));
-    if (view === "tree") return withConfirm.child(toggle).child(this.tree(plan, t));
-    return withConfirm.child(toggle).child(div().flex_1().min_h(0).p(20)
+    const top = withConfirm.child(toggle).when(this.assigning && todo.length > 0, (el) => el.child(v_flex().flex_none().mx(20).mt(10).p(12).gap(8).rounded(9)
+      .border_1().border_color(t.accent).bg(t.surface)
+      .child(div().text_size(12).child(`Assign all ${todo.length} items that are not in DevOps yet to:`))
+      .child(this.peoplePicker(t, undefined, (person, cx) => this.assignAll(person, cx), "assign-all"))));
+    if (view === "tree") return top.child(this.tree(plan, t));
+    return top.child(div().flex_1().min_h(0).p(20)
       .child(h_flex().id("plan-board").size_full().gap(14).items_start().overflow_x_scrollbar()
         .children(plan.features.map((f, fi) => this.column(f, fi, t)))
         .child(div().id("plan-add-feature").w(160).h(44).flex_none().flex().items_center().justify_center().rounded(10)
@@ -856,7 +947,9 @@ export default class Planner extends View {
         .child("This item exists in Azure DevOps. Changes here stay in the plan; edit it in DevOps.")))
       .when(Boolean(it.failed), (el) => el.child(div().text_size(12).text_color(t.ansi1).child(it.failed)))
       .child(this.label("Title", t)).child(this.input(this.f.title, t))
-      .child(this.label("Description", t)).child(this.textarea(this.f.description, t));
+      .child(this.label("Description", t)).child(this.textarea(this.f.description, t))
+      .child(this.label(`Assigned to: ${this.f.assignee?.name ?? "nobody"}`, t))
+      .child(this.peoplePicker(t, this.f.assignee, (person, cx) => { this.f.assignee = person; cx.notify(); }, "assign-item"));
     if (isPbi) {
       body
         .child(this.label("Acceptance criteria (one per line)", t)).child(this.textarea(this.f.ac, t))
