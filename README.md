@@ -8,7 +8,7 @@ A Herdr layout with a side panel that shows the Azure DevOps PBIs of the project
 
 Ask your agent in Herdr:
 
-> Add the layout from https://github.com/<owner>/herdr-pbis
+> Add the layout from https://github.com/JellyPuddingPie/Herdr-Azure-Devops-Integration
 
 Or copy the files by hand:
 
