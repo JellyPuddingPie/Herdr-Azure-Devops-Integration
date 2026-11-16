@@ -50,7 +50,7 @@ Drafting:
 
 - The planner reads the open Features of the project (WIQL, type Feature, not Done, Removed or Closed, at most 200).
 - It writes a brief with the rules, the JSON shape, the existing Features and the pasted text to `data/pbi-plans/<plan>.input.md`.
-- It runs `claude -p "Read the file … and do the task in it." --allowedTools Read --output-format json`, with a 10 minute limit.
+- It runs `claude -p "Read the file … and do the task in it." --allowedTools Read --output-format json`, with a 10 minute limit and stdin closed. On Windows it runs through PowerShell (`$null | & $c -p …`) and prefers `claude.cmd` (the npm install) over `claude`.
 - It takes the first `{` to the last `}` of `result` as JSON: `{ features: [{ title, description, existingId, pbis: [{ title, description, acceptanceCriteria, effort, tags }] }] }`. An `existingId` that is not an open Feature is dropped.
 - Closing the dialog stops a draft. The plan then shows "Drafting stopped", with Redraft.
 
@@ -86,6 +86,8 @@ Creating:
 - `tabs-pbis` is a clone. It does not get updates of Herdr's own tab bar.
 - `data/pbis-auth.json` holds refresh tokens. Never share or commit it.
 - A new mod folder with a `mod.json` change can get docked into the shown layout as a column. Keep `"place": "none"` and check the layout after adding the planner.
+- `claude -p` waits for stdin to close. `exec` leaves it open, so the call hangs or returns nothing. Close stdin (`< /dev/null`, or `$null |` in PowerShell).
+- On Windows, `exec("claude")` can find an old WinGet `claude.exe` before the npm `claude.cmd`. Ask for `claude.cmd` first.
 - An agent started in a terminal has no Azure DevOps sign-in. Do not pass only a link or a short summary: write the whole PBI to a file first.
 
 ## Done when

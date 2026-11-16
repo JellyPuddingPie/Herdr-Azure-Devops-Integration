@@ -3,7 +3,7 @@
 // Uses the sign-ins and space links of the pbis mod.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Scrollbar } from "gpui-base";
-import { spaces, exec, theme, appHome, props, closeOverlay } from "herdr";
+import { spaces, exec, theme, appHome, props, closeOverlay, window } from "herdr";
 import * as fs from "fs/promises";
 
 const ADO_SCOPE = "499b84ac-1321-427f-aa17-267ca6975798/.default offline_access openid profile";
@@ -262,20 +262,24 @@ function parseDraft(out) {
   }));
 }
 
+// Claude Code in print mode. Its stdin must be closed, or it waits for input.
+// On Windows the npm shim (claude.cmd) comes first: a WinGet claude.exe on the PATH can be much older.
 async function runClaude(prompt, cwd) {
-  const args = ["-p", prompt, "--allowedTools", "Read", "--output-format", "json"];
-  let lastError = null;
-  for (const cmd of ["claude", "claude.exe", "claude.cmd"]) {
-    try {
-      const r = await exec(cmd, args, { cwd, timeout: 600000 });
-      if (r.code !== 0) throw new Error(short((r.stderr || r.stdout || `claude exited with ${r.code}`).trim(), 300));
-      return r.stdout;
-    } catch (e) {
-      lastError = e;
-      if (!/not found|cannot find|no such|ENOENT|start/i.test(String(e?.message ?? e))) throw e;
-    }
+  const flags = "--allowedTools Read --output-format json";
+  const r = window()?.platform === "windows"
+    ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command",
+      "$c = (Get-Command claude.cmd, claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source; " +
+      "if (-not $c) { Write-Error 'Claude Code (claude) is not installed or not on the PATH.'; exit 9 }; " +
+      `$null | & $c -p '${prompt.replace(/'/g, "''")}' ${flags}`], { cwd, timeout: 600000 })
+    : await exec("sh", ["-c", `claude -p "$1" ${flags} < /dev/null`, "sh", prompt], { cwd, timeout: 600000 });
+  const out = r.stdout.trim();
+  if (r.code !== 0 || !out) {
+    const why = (r.stderr || out).split("\n").filter((l) => l.trim() && !/InitializeDefaultDrives/.test(l)).join(" ");
+    throw new Error(short(why || `Claude Code stopped with code ${r.code} and no output.`, 400));
   }
-  throw lastError ?? new Error("Claude Code is not installed.");
+  try { const j = JSON.parse(out); if (j.is_error) throw new Error(short(String(j.result ?? "Claude Code reported an error."), 400)); }
+  catch (e) { if (!(e instanceof SyntaxError)) throw e; }
+  return out;
 }
 
 // ---------- the planner ----------
