@@ -1,9 +1,9 @@
 // Turns pasted text into a plan of Features and PBIs, shows it as a board,
 // and creates the items in the Azure DevOps project linked to the space.
 // Uses the sign-ins and space links of the pbis mod.
-import { View, div } from "gpui-kit";
+import { View, div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Scrollbar } from "gpui-base";
-import { spaces, exec, theme, appHome, props, closeOverlay, window } from "herdr";
+import { spaces, exec, theme, appHome, props, closeOverlay, window as appWindow } from "herdr";
 import * as fs from "fs/promises";
 
 const ADO_SCOPE = "499b84ac-1321-427f-aa17-267ca6975798/.default offline_access openid profile";
@@ -266,7 +266,7 @@ function parseDraft(out) {
 // On Windows the npm shim (claude.cmd) comes first: a WinGet claude.exe on the PATH can be much older.
 async function runClaude(prompt, cwd) {
   const flags = "--allowedTools Read --output-format json";
-  const r = window()?.platform === "windows"
+  const r = appWindow()?.platform === "windows"
     ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command",
       "$c = (Get-Command claude.cmd, claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source; " +
       "if (-not $c) { Write-Error 'Claude Code (claude) is not installed or not on the PATH.'; exit 9 }; " +
@@ -694,6 +694,108 @@ export default class Planner extends View {
         .child(Scrollbar.vertical(`col-list-${f.key}`).absolute().inset_0()));
   }
 
+  viewMode() {
+    if (!this.view) { try { this.view = localStorage.getItem("planner.view") || "tree"; } catch { this.view = "tree"; } }
+    return this.view;
+  }
+
+  legend(t) {
+    const swatch = (color, label, dashed) => h_flex().gap(5).items_center()
+      .child(dashed
+        ? h_flex().gap(2).children([0, 1, 2].map(() => div().w(4).h(2).bg(color)))
+        : div().w(16).h(2).bg(color))
+      .child(div().text_size(10.5).text_color(t.dim).child(label));
+    return h_flex().gap(12)
+      .child(swatch(t.muted, "New"))
+      .child(swatch(t.ansi4, "Existing in DevOps", true))
+      .child(swatch(t.ansi2, "Created"))
+      .child(swatch(t.ansi1, "Failed"));
+  }
+
+  // The plan as a tree, left to right: plan → Features → PBIs, joined by curved arrows.
+  tree(plan, t) {
+    const ROOT = { x: 24, w: 210, h: 96 };
+    const FEAT = { x: 330, w: 270, h: 104 };
+    const PBI = { x: 700, w: 330, h: 112 };
+    const ADD = 34, GAP = 14, GROUP = 30, TOP = 24;
+    const color = (it) => it.failed ? t.ansi1 : it.createdId ? t.ansi2 : it.existingId ? t.ansi4 : t.muted;
+
+    // Each Feature is centered on its PBIs (plus the "+ PBI" row under them).
+    let y = TOP;
+    const groups = plan.features.map((f) => {
+      const top = y;
+      const pbis = f.pbis.map((p, pi) => ({ p, pi, y: top + pi * (PBI.h + GAP) }));
+      const addY = top + f.pbis.length * (PBI.h + GAP);
+      const bottom = addY + ADD;
+      const fy = Math.max(top, (top + bottom) / 2 - FEAT.h / 2);
+      y = Math.max(bottom, fy + FEAT.h) + GROUP;
+      return { f, fy, pbis, addY };
+    });
+    const addFeatureY = y;
+    const height = addFeatureY + 40 + TOP;
+    const width = PBI.x + PBI.w + 40;
+    // Centered on the Features, but never below the first screen, so the plan node stays in view.
+    const centered = (groups.length ? (groups[0].fy + groups[groups.length - 1].fy + FEAT.h) / 2 : TOP + ROOT.h / 2) - ROOT.h / 2;
+    const rootY = Math.max(TOP, Math.min(centered, 220));
+
+    // Connectors: a cubic curve from the right edge of a node to the left edge of its child, with a head.
+    const lines = [];
+    const link = (x1, y1, x2, y2, c, dashed, w = 1.6) => {
+      const mid = (x2 - x1) / 2;
+      let path = PathBuilder.stroke(w);
+      if (dashed) path = path.dash_array([5, 5]);
+      lines.push({ path: path.move_to(x1, y1).cubic_bezier_to(x2 - 8, y2, x1 + mid, y1, x2 - mid - 8, y2).build(), c });
+      lines.push({ path: PathBuilder.fill().add_polygon([[x2 - 9, y2 - 4.5], [x2, y2], [x2 - 9, y2 + 4.5]], true).build(), c });
+    };
+    const rootMid = rootY + ROOT.h / 2;
+    for (const g of groups) {
+      const fMid = g.fy + FEAT.h / 2;
+      link(ROOT.x + ROOT.w, rootMid, FEAT.x, fMid, color(g.f), Boolean(g.f.existingId), 2);
+      for (const { p, y: py } of g.pbis) link(FEAT.x + FEAT.w, fMid, PBI.x, py + PBI.h / 2, color(p), false);
+    }
+
+    const at = (el, x, top, w, h) => el.absolute().left(x).top(top).w(w).h(h);
+    const nodes = [];
+    nodes.push(at(v_flex().id("tree-root").p(14).gap(6).rounded(12).border_2().border_color(t.accent).bg(t.selected), ROOT.x, rootY, ROOT.w, ROOT.h)
+      .child(div().text_size(10.5).font_semibold().text_color(t.accent).child("PLAN"))
+      .child(div().text_size(14).font_semibold().child(short(plan.name, 60)))
+      .child(div().text_size(11).text_color(t.dim).child(`${orgName(plan.org)} / ${plan.project}`)));
+    groups.forEach(({ f, fy, pbis, addY }, fi) => {
+      nodes.push(at(v_flex().id(`tree-f-${f.key}`).p(12).gap(5).rounded(11).border_1().border_color(color(f)).bg(t.surface)
+        .overflow_hidden().cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openItem(fi, null, cx)), FEAT.x, fy, FEAT.w, FEAT.h)
+        .child(h_flex().gap(6).items_center()
+          .child(div().text_size(10.5).font_semibold().text_color(t.accent).child(f.existingId ? "★ FEATURE" : "FEATURE"))
+          .child(div().flex_1())
+          .child(this.itemPill(f, t)))
+        .child(div().text_size(13.5).font_semibold().child(short(f.title, 70)))
+        .child(div().text_size(11).text_color(t.dim).child(`${f.pbis.length} PBIs · ${f.pbis.reduce((n, p) => n + (p.effort || 0), 0)} effort`)));
+      for (const { p, pi, y: py } of pbis) {
+        const first = p.description.split("\n").find((l) => l.trim()) ?? "";
+        const meta = [`${p.acceptanceCriteria.length} AC`, p.effort && `effort ${p.effort}`].filter(Boolean).join(" · ");
+        nodes.push(at(v_flex().id(`tree-p-${p.key}`).p(10).gap(4).rounded(10).border_1().border_color(p.failed ? t.ansi1 : t.border).bg(t.surface)
+          .overflow_hidden().cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openItem(fi, pi, cx)), PBI.x, py, PBI.w, PBI.h)
+          .child(h_flex().gap(6).items_center()
+            .child(this.itemPill(p, t))
+            .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(meta)))
+          .child(div().text_size(12.5).font_semibold().child(short(p.title, 80)))
+          .child(div().text_size(11).text_color(t.muted).child(short(p.failed || first, 95))));
+      }
+      nodes.push(at(div().id(`tree-add-${f.key}`).flex().items_center().justify_center().rounded(8).border_1().border_color(t.border)
+        .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_click((_e, cx) => this.addPbi(fi, cx)), PBI.x, addY, 110, ADD - 8).child("+ PBI"));
+    });
+    nodes.push(at(div().id("tree-add-feature").flex().items_center().justify_center().rounded(9).border_1().border_color(t.border)
+      .text_size(12).text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => this.addFeature(cx)), FEAT.x, addFeatureY, 140, 34).child("+ Feature"));
+
+    const canvas = div().relative().flex_none().w(width).h(height)
+      .children(lines.map((l) => window.paint_path(l.path, l.c).absolute().left(0).top(0).w(width).h(height)))
+      .children(nodes);
+    return div().flex_1().min_h(0).relative().mt(8)
+      .child(div().id("plan-tree").absolute().inset_0().overflow_scroll().child(canvas))
+      .child(Scrollbar.vertical("plan-tree").absolute().inset_0());
+  }
+
   renderBoard(t) {
     const plan = this.plan;
     const all = items(plan);
@@ -720,7 +822,20 @@ export default class Planner extends View {
         .child(div().text_size(12).text_color(t.dim).child("Input text:"))
         .child(div().text_size(12).text_color(t.muted).child(short(plan.input, 1200))));
     }
-    return withConfirm.child(div().flex_1().min_h(0).p(20)
+    const view = this.viewMode();
+    const toggle = h_flex().flex_none().mx(20).mt(12).gap(4).items_center()
+      .child(div().text_size(11).text_color(t.dim).mr(4).child("View"))
+      .children([["tree", "Tree"], ["columns", "Columns"]].map(([key, label]) => {
+        const on = view === key;
+        return div().id(`view-${key}`).h(24).px(10).flex().items_center().rounded(6).text_size(11.5).cursor_pointer()
+          .border_1().border_color(on ? t.accent : t.border).bg(on ? t.selected : t.raised).text_color(on ? t.accent : t.muted)
+          .on_click((_e, cx) => { try { localStorage.setItem("planner.view", key); } catch { /* no storage */ } this.view = key; cx.notify(); })
+          .child(label);
+      }))
+      .child(div().flex_1())
+      .child(this.legend(t));
+    if (view === "tree") return withConfirm.child(toggle).child(this.tree(plan, t));
+    return withConfirm.child(toggle).child(div().flex_1().min_h(0).p(20)
       .child(h_flex().id("plan-board").size_full().gap(14).items_start().overflow_x_scrollbar()
         .children(plan.features.map((f, fi) => this.column(f, fi, t)))
         .child(div().id("plan-add-feature").w(160).h(44).flex_none().flex().items_center().justify_center().rounded(10)

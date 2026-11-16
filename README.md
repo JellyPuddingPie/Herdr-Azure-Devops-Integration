@@ -32,7 +32,7 @@ Click **Plan** in the tab bar. It opens the PBI planner for the project linked t
 
 1. Click **+ New plan**. Give it a name and paste your text, such as meeting notes or a scope.
 2. Click **Draft with Claude**. Claude Code reads the text and the open Features of the project. It drafts Features with PBIs under them. This takes about half a minute.
-3. The plan shows as a board: one column per Feature, with its PBIs as cards. A Feature marked ★ already exists in DevOps.
+3. The plan shows as a tree: the plan, its Features and their PBIs, joined by arrows. The arrow color shows the state: gray new, green created, red failed, dashed blue for a Feature that already exists in DevOps. Switch to **Columns** for a board view.
 4. Click a card to read and edit it: title, description, acceptance criteria, effort, tags and Feature. Use **+ PBI** and **+ Feature** to add items.
 5. Click **Create N items in DevOps** and confirm. The planner creates the Features, then the PBIs under them. Each card then shows its new ID.
 
