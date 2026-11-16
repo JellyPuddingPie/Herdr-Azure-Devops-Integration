@@ -1,8 +1,8 @@
-# PBIs for Herdr
+# Azure DevOps PBIs for Herdr
 
 A Herdr layout with a side panel that shows the Azure DevOps PBIs of the project linked to each space. Each PBI is a card. A card opens the work item, or starts a Claude Code agent on it.
 
-![PBIs](preview.png)
+![Azure DevOps PBIs](preview.png)
 
 ## Install
 

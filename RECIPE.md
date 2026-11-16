@@ -1,8 +1,8 @@
-# PBIs
+# Azure DevOps PBIs
 
 A side panel that shows the open Azure DevOps Product Backlog Items (PBIs) of the project linked to the shown space. Each space links to one project. The panel opens from a **PBIs** button in the tab bar, next to Files and Changes. Each PBI is a card with its ID, state, effort, assignee, title and a short description. A card can start a Claude Code agent on that PBI in a new tab.
 
-![PBIs](preview.png)
+![Azure DevOps PBIs](preview.png)
 
 ## What you see
 
