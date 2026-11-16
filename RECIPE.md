@@ -35,10 +35,36 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - **Sign-in:** Microsoft device code flow, one sign-in per tenant. The panel shows a code, puts it on the clipboard and opens the Microsoft page. It polls until the person signs in. Then it reloads.
 - **Agent status:** the panel does not show agent status. The tab bar shows it as in `main`.
 
+## The PBI planner
+
+A second mod, `pbi-planner`. It opens as a dialog (`openOverlay`, `kind: "dialog"`, 94% wide, 92% high) from a **Plan** button in the tab bar after **PBIs**, with `props.space`. It uses the project linked to that space in `data/pbis-links.json`, and the sign-ins in `data/pbis-auth.json`. Without a link it asks to link a project in the PBIs panel first.
+
+Screens:
+
+- **Plans:** the plans of this project, newest first. Each row shows the name, the number of Features and PBIs, and a pill: Draft, Error, "x of y created" or Created. **+ New plan** and **Delete** per row.
+- **New plan:** a name field, a large text area for the pasted text, and **Draft with Claude**.
+- **Board:** one 300 px column per Feature, side by side, scrolling sideways. The column head shows "FEATURE" (or "★ FEATURE" for an existing one), a pill and the title. Under it the PBI cards, each with a pill (New, Created #id, Existing #id or Failed), the number of acceptance criteria, the effort, the tags, the title and the first line of the description. A **+ PBI** button ends each column, and a **+ Feature** button follows the last column. The header has **All plans**, **Redraft** and **Create N items in DevOps**.
+- **Item:** title, description, acceptance criteria (one per line), effort, tags and a row of Feature buttons to move the PBI. **Delete**, **Back** and **Save**. A Feature has only title and description.
+
+Drafting:
+
+- The planner reads the open Features of the project (WIQL, type Feature, not Done, Removed or Closed, at most 200).
+- It writes a brief with the rules, the JSON shape, the existing Features and the pasted text to `data/pbi-plans/<plan>.input.md`.
+- It runs `claude -p "Read the file … and do the task in it." --allowedTools Read --output-format json`, with a 10 minute limit.
+- It takes the first `{` to the last `}` of `result` as JSON: `{ features: [{ title, description, existingId, pbis: [{ title, description, acceptanceCriteria, effort, tags }] }] }`. An `existingId` that is not an open Feature is dropped.
+- Closing the dialog stops a draft. The plan then shows "Drafting stopped", with Redraft.
+
+Creating:
+
+- The work item type comes from the project: `Product Backlog Item` (effort in `Effort`), else `User Story` (`StoryPoints`), else `Requirement` (`Size`).
+- First every new Feature, then every PBI with a `System.LinkTypes.Hierarchy-Reverse` relation to its Feature. `POST {project}/_apis/wit/workitems/${type}` with `application/json-patch+json`. Description and acceptance criteria are sent as HTML. Area and iteration are the project defaults.
+- After each item the plan file is saved with the new ID. An error on one item marks that card red and the rest go on. Create again skips items that have an ID.
+- Plans live in `data/pbi-plans/<id>.json`, with a list in `data/pbi-plans/index.json`.
+
 ## Built from
 
 - Layout `layouts/main-pbis.json`: a clone of `main` (`layout.clone`). Two changes: the `tabs` block uses mod `tabs-pbis`, and the `panel-body` stack has a third child `{ "id": "pbis", "type": "block", "content": { "mod": "pbis" } }`.
-- Mod `tabs-pbis`: a clone of the shipped `tabs` mod (`mod.clone`). Two changes: `enabled` always includes `"pbis"`, and a third `panelButton("pbis", "PBIs", "mods/pbis/pbis.svg")` after Changes.
+- Mod `tabs-pbis`: a clone of the shipped `tabs` mod (`mod.clone`). Three changes: `enabled` always includes `"pbis"`, a third `panelButton("pbis", "PBIs", "mods/pbis/pbis.svg")` after Changes, and a **Plan** button that opens `pbi-planner` as a dialog.
 - Mod `pbis` (`main.js`, `mod.json` with `"place": "none"`, `pbis.svg`).
   - `herdr` functions: `spaces`, `exec`, `run`, `theme`, `appHome`, `shared` (only to take over links from an older version).
   - Commands: `tab.new`. Also `notify` for errors of Start agent.
@@ -46,6 +72,8 @@ When the space has no link, the panel shows a field "Organization name or URL" w
   - Programs: `curl`, once per organization, to read the `X-VSS-ResourceTenant` header of an anonymous request. That header names the tenant.
   - Client ID `872cd9fa-d31f-45e0-9eab-6e460a02d1f1` (Microsoft's public client for Visual Studio). Scope `499b84ac-1321-427f-aa17-267ca6975798/.default offline_access openid profile`.
   - Files: `data/pbis-links.json` (space ID to `{ org, project }`) and `data/pbis-auth.json` (tenant to `{ refresh_token, user }`), under the app home.
+
+- Mod `pbi-planner` (`main.js`, `mod.json` with `"place": "none"` and an `overlay` size for `mod.open`, `planner.svg`). It copies the sign-in code of `pbis`, because mods cannot import each other.
 
 ## Watch out
 
@@ -57,6 +85,7 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 - `fetch` responses have no headers, which is why the tenant lookup uses `curl`.
 - `tabs-pbis` is a clone. It does not get updates of Herdr's own tab bar.
 - `data/pbis-auth.json` holds refresh tokens. Never share or commit it.
+- A new mod folder with a `mod.json` change can get docked into the shown layout as a column. Keep `"place": "none"` and check the layout after adding the planner.
 - An agent started in a terminal has no Azure DevOps sign-in. Do not pass only a link or a short summary: write the whole PBI to a file first.
 
 ## Done when

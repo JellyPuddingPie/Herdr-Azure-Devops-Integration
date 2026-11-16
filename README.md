@@ -13,8 +13,8 @@ Ask your agent in Herdr:
 Or copy the files by hand:
 
 1. Copy `layouts/main-pbis.json` to `~/.config/herdr-app/layouts/`.
-2. Copy `mods/pbis` and `mods/tabs-pbis` to `~/.config/herdr-app/mods/`.
-3. Run `herdr-app check ~/.config/herdr-app/mods/pbis` and `herdr-app check ~/.config/herdr-app/mods/tabs-pbis`.
+2. Copy `mods/pbis`, `mods/pbi-planner` and `mods/tabs-pbis` to `~/.config/herdr-app/mods/`.
+3. Run `herdr-app check` on each of the three mod folders.
 4. Switch to the layout: `herdr-app do layout.switch --name main-pbis`, or press `Ctrl+Shift+L`.
 
 ## Use
@@ -26,11 +26,26 @@ Or copy the files by hand:
 
 **Assigned to me** shows only your items. **Unlink** removes the link of the space.
 
+## Plan new PBIs
+
+Click **Plan** in the tab bar. It opens the PBI planner for the project linked to the space.
+
+1. Click **+ New plan**. Give it a name and paste your text, such as meeting notes or a scope.
+2. Click **Draft with Claude**. Claude Code reads the text and the open Features of the project. It drafts Features with PBIs under them. This takes about half a minute.
+3. The plan shows as a board: one column per Feature, with its PBIs as cards. A Feature marked ★ already exists in DevOps.
+4. Click a card to read and edit it: title, description, acceptance criteria, effort, tags and Feature. Use **+ PBI** and **+ Feature** to add items.
+5. Click **Create N items in DevOps** and confirm. The planner creates the Features, then the PBIs under them. Each card then shows its new ID.
+
+Nothing goes to Azure DevOps before step 5. Plans are saved, so you can come back to them. If an item fails, fix it and click Create again: items that already exist are skipped.
+
+The planner needs Claude Code (`claude`) on the PATH, signed in.
+
 ## What it reaches
 
 - `login.microsoftonline.com`, to sign in (device code flow, Microsoft's public client for Visual Studio).
-- `dev.azure.com`, to read projects and work items. It never writes to Azure DevOps.
+- `dev.azure.com`, to read projects and work items. Only the planner writes, and only when you click Create.
 - It runs `curl` once per organization to find the organization's tenant.
+- The planner runs `claude -p` with your pasted text, so the text goes to Claude.
 - It keeps your space links and your sign-ins in `~/.config/herdr-app/data/`. The sign-in file holds refresh tokens: keep it private.
 
 ## Limits

@@ -109,6 +109,10 @@ export default class Tabs extends View {
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("pbis", "PBIs", "mods/pbis/pbis.svg"))
+      .child(h_flex().id("open-planner").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+        .text_size(12).bg(t.chrome).text_color(t.muted).hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
+        .on_click(() => openOverlay({ mod: "pbi-planner", kind: "dialog", width: 0.94, height: 0.92, props: { space: space?.id } }))
+        .child(svg("mods/pbi-planner/planner.svg").size(14)).child("Plan"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-pbis/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-pbis/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-pbis/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
