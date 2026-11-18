@@ -14,7 +14,7 @@ The layout is Herdr's `main` layout with one extra panel. Left to right:
 
 The PBIs panel, top to bottom:
 
-- A header, 42 px: "PBIs" in semibold, the linked project name in dim text, and the item count with the time of the last load on the right.
+- A header, 42 px: a **PBIs / Tasks** switch (two 22 px segments on a `raised` background, the chosen one `selected` and semibold), the linked project name in dim text, and the item count with the time of the last load on the right.
 - A toolbar: **Refresh**, **Assigned to me** (accent border and text while on) and **Unlink** on the right.
 - A filter row with three equal buttons, **Iteration**, **Area** and **Status**, each showing the chosen path's last part or "All", with a ▾. A chosen filter has an `accent` border and text. Clicking one opens a list below it (max 220 px, scrolls): "All iterations", "All areas" or "All statuses" first, then every value of the loaded items with its count. Statuses are in workflow order (New, Approved, Committed, In progress, Testing, On hold, then the rest by name); paths by name. The path is shown without the project root. Items at the root iteration show as "No iteration (backlog)".
 - A line "Signed in as <account>" with **Sign out**, when a sign-in exists for the tenant.
@@ -25,7 +25,8 @@ When the space has no link, the panel shows a field "Organization name or URL" w
 ## How it behaves
 
 - **Per space:** the link is stored by space ID. Switching spaces shows the PBIs of that space's project. The tab bar remembers per space whether the panel was open, like Files and Changes.
-- **Which items:** work item types `Product Backlog Item` and `User Story`, not in state Done, Removed or Closed, in backlog order. At most 200.
+- **Which items:** with **PBIs**, work item types `Product Backlog Item` and `User Story`, in backlog order. With **Tasks**, type `Task`, newest change first. Both skip the states Done, Removed and Closed. At most 200.
+- **Tasks:** a task card shows the remaining work (`RemainingWork`, as "4h left") in the gray line, and a line "↳ #<id> <title>" with its parent PBI (`System.Parent`, titles read in one extra request). The choice is kept in `localStorage` (`pbis.kind`) and is part of the cache key. **Start agent** names the work item type in the task it hands to Claude Code.
 - **Iteration, Area and Status filters:** filter the loaded items in the panel, with no new request. A path matches itself and every path under it; a status matches itself. Each list counts the items that pass the other two filters. The choice is kept per space in `localStorage` (`pbis.filter.<space id>`). The header shows "<shown> of <loaded>" while a filter is on. Cards show the last part of their iteration path in the gray line.
 - **Assigned to me:** filters on `[System.AssignedTo] = @Me`. The choice is kept in `localStorage`.
 - **Description:** the Description field as plain text. When it is empty, the Acceptance Criteria field.

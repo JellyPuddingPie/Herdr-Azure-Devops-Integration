@@ -11,7 +11,7 @@ const ADO_SCOPE = "499b84ac-1321-427f-aa17-267ca6975798/.default offline_access 
 const CLIENT_ID = "872cd9fa-d31f-45e0-9eab-6e460a02d1f1";
 const LOGIN = "https://login.microsoftonline.com";
 const NO_TENANT = "00000000-0000-0000-0000-000000000000";
-const TYPES = ["'Product Backlog Item'", "'User Story'"];
+const TYPES = { pbis: ["'Product Backlog Item'", "'User Story'"], tasks: ["'Task'"] };
 const CLOSED = ["'Done'", "'Removed'", "'Closed'"];
 const REFRESH_MS = 5 * 60 * 1000;
 
@@ -279,14 +279,14 @@ async function listProjects(org) {
   return (data.value ?? []).map((p) => p.name).sort((a, b) => a.localeCompare(b));
 }
 
-async function loadPbis(link, mine) {
+async function loadPbis(link, mine, kind = "pbis") {
   const project = encodeURIComponent(link.project);
   const wiql = [
     "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project",
-    `AND [System.WorkItemType] IN (${TYPES.join(", ")})`,
+    `AND [System.WorkItemType] IN (${TYPES[kind].join(", ")})`,
     `AND [System.State] NOT IN (${CLOSED.join(", ")})`,
     mine ? "AND [System.AssignedTo] = @Me" : "",
-    "ORDER BY [Microsoft.VSTS.Common.BacklogPriority] ASC, [System.ChangedDate] DESC",
+    kind === "tasks" ? "ORDER BY [System.ChangedDate] DESC" : "ORDER BY [Microsoft.VSTS.Common.BacklogPriority] ASC, [System.ChangedDate] DESC",
   ].join(" ");
   const found = await ado(link.org, `${project}/_apis/wit/wiql?$top=200&api-version=7.1`, { query: wiql });
   const ids = (found.workItems ?? []).map((w) => w.id).slice(0, 200);
@@ -295,6 +295,7 @@ async function loadPbis(link, mine) {
     "System.Id", "System.Title", "System.State", "System.AssignedTo", "System.Description",
     "Microsoft.VSTS.Common.AcceptanceCriteria", "System.IterationPath", "System.AreaPath",
     "Microsoft.VSTS.Scheduling.Effort", "Microsoft.VSTS.Scheduling.StoryPoints",
+    "Microsoft.VSTS.Scheduling.RemainingWork", "System.Parent", "System.WorkItemType",
   ].join(",");
   const got = await ado(link.org, `${project}/_apis/wit/workitems?ids=${ids.join(",")}&fields=${fields}&api-version=7.1`);
   const byId = new Map();
@@ -310,12 +311,23 @@ async function loadPbis(link, mine) {
       iteration: String(f["System.IterationPath"] ?? ""),
       area: String(f["System.AreaPath"] ?? ""),
       effort: effort == null ? "" : String(effort),
+      type: String(f["System.WorkItemType"] ?? ""),
+      remaining: f["Microsoft.VSTS.Scheduling.RemainingWork"] ?? null,
+      parent: f["System.Parent"] ? { id: f["System.Parent"], title: "" } : null,
       summary: short(description),
       description: description.slice(0, 4000),
       url: `${link.org}/${project}/_workitems/edit/${w.id}`,
     });
   }
-  return ids.map((id) => byId.get(id)).filter(Boolean);
+  const list = ids.map((id) => byId.get(id)).filter(Boolean);
+  // A task shows the title of the PBI it belongs to.
+  const parents = [...new Set(list.map((x) => x.parent?.id).filter(Boolean))].slice(0, 200);
+  if (parents.length) {
+    const got = await ado(link.org, `_apis/wit/workitems?ids=${parents.join(",")}&fields=System.Title&errorPolicy=omit&api-version=7.1`).catch(() => ({ value: [] }));
+    const titles = new Map((got.value ?? []).filter(Boolean).map((w) => [w.id, String(w.fields?.["System.Title"] ?? "")]));
+    for (const x of list) if (x.parent) x.parent.title = titles.get(x.parent.id) ?? "";
+  }
+  return list;
 }
 
 // ---------- the panel ----------
@@ -325,6 +337,7 @@ export default class Pbis extends View {
     this.cache = {};
     this.starting = {};
     this.mine = localStorage.getItem("pbis.mine") === "1";
+    this.kind = localStorage.getItem("pbis.kind") === "tasks" ? "tasks" : "pbis";
     this.connect = null; // the organization step: { org, loading, error, needsLogin, projects }
     this.login = null; // a device code sign-in: { tenant, code, uri, error, then }
     this.orgInput = InputState.new({ placeholder: "Organization name or URL", value: localStorage.getItem("pbis.lastOrg") ?? "" });
@@ -360,7 +373,7 @@ export default class Pbis extends View {
     const p = { id: d.id, title: d.title, url: d.url };
     const close = () => closeOverlay(props().overlay);
     const body = d.loading
-      ? div().p(18).text_color(t.dim).child("Reading the PBI…")
+      ? div().p(18).text_color(t.dim).child("Reading the work item…")
       : d.error
         ? div().p(18).text_size(12).text_color(t.ansi1).child(d.error)
         // The first line repeats the title shown above: leave it out.
@@ -389,7 +402,7 @@ export default class Pbis extends View {
     return { space, link: space ? links()[space.id] ?? null : null };
   }
 
-  cacheKey(space, link) { return `${space.id}|${link.org}|${link.project}|${this.mine}`; }
+  cacheKey(space, link) { return `${space.id}|${link.org}|${link.project}|${this.mine}|${this.kind}`; }
 
   refresh(cx, force) {
     const { space, link } = this.current();
@@ -400,7 +413,7 @@ export default class Pbis extends View {
     this.cache[key] = { ...(entry ?? { items: [] }), loading: true, error: "", needsLogin: undefined };
     cx.spawn(async (cx) => {
       try {
-        const items = await loadPbis(link, this.mine);
+        const items = await loadPbis(link, this.mine, this.kind);
         this.cache[key] = { items, loading: false, error: "", at: Date.now() };
       } catch (e) {
         this.cache[key] = {
@@ -504,15 +517,15 @@ export default class Pbis extends View {
         const file = `${dir}/${orgName(link.org)}-${p.id}.md`;
         await fs.writeFile(file, md);
         const task = [
-          `Work on Azure DevOps PBI #${p.id}: ${p.title}`,
+          `Work on Azure DevOps ${p.type || "PBI"} #${p.id}: ${p.title}`,
           "",
-          `The full PBI (fields, acceptance criteria, comments, linked items) is in this file. Read it first: ${file}`,
+          `The full work item (fields, acceptance criteria, comments, linked items such as its parent PBI) is in this file. Read it first: ${file}`,
           `You do not need to sign in to Azure DevOps to read it. Link: ${p.url}`,
         ].join("\n");
         run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude", "--permission-mode", "plan"], task });
         after?.();
       } catch (e) {
-        notify({ title: `Could not read PBI #${p.id}`, body: String(e?.message ?? e), level: "error" });
+        notify({ title: `Could not read #${p.id}`, body: String(e?.message ?? e), level: "error" });
       } finally {
         delete this.starting[p.id];
         cx.notify();
@@ -676,7 +689,7 @@ export default class Pbis extends View {
 
   card(p, t, space, link) {
     const sprint = p.iteration.includes("\\") ? p.iteration.split("\\").pop() : "";
-    const meta = [p.effort && `${p.effort} pts`, p.assignedTo, sprint].filter(Boolean).join(" · ");
+    const meta = [p.effort && `${p.effort} pts`, p.remaining != null && `${p.remaining}h left`, p.assignedTo, sprint].filter(Boolean).join(" · ");
     return v_flex().id(`pbi-${p.id}`).flex_none().p(10).gap(4).rounded(9).border_1().border_color(t.border).bg(t.surface)
       .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.openDetail(p, space, link))
       .child(h_flex().gap(6).items_center()
@@ -687,6 +700,8 @@ export default class Pbis extends View {
           .border_1().border_color(t.border).hover((s) => s.bg(t.raised).text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.startAgent(p, space, link, cx); })
           .child(this.starting[p.id] ? "Reading…" : "Start agent")))
+      .when(Boolean(p.parent), (el) => el.child(div().truncate().text_size(11).text_color(t.dim)
+        .child(`↳ #${p.parent.id}${p.parent.title ? ` ${p.parent.title}` : ""}`)))
       .child(div().text_size(13).font_semibold().text_color(t.foreground).child(p.title))
       .child(div().text_size(11.5).text_color(t.muted).child(p.summary || "No description."));
   }
@@ -700,7 +715,18 @@ export default class Pbis extends View {
     if (!this.ready) return root.child(div().p(14).text_color(t.dim).child("Loading…"));
 
     const header = h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(div().font_semibold().child("PBIs"))
+      .child(h_flex().flex_none().gap(2).p(2).rounded(8).bg(t.raised)
+        .children([["pbis", "PBIs"], ["tasks", "Tasks"]].map(([k, label]) => {
+          const on = this.kind === k;
+          return div().id(`pbis-kind-${k}`).h(22).px(9).flex().items_center().rounded(6).text_size(12).cursor_pointer()
+            .bg(on ? t.selected : t.raised).text_color(on ? t.foreground : t.muted)
+            .when(on, (el) => el.font_semibold()).hover((s) => s.text_color(t.foreground))
+            .on_click((_e, cx) => {
+              if (on) return;
+              this.kind = k; localStorage.setItem("pbis.kind", k); this.facetOpen = null;
+              this.refresh(cx, false); cx.notify();
+            }).child(label);
+        })))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(link ? link.project : space.name));
     if (!link) return root.child(header).child(this.linkStep(t, space));
 
@@ -713,6 +739,7 @@ export default class Pbis extends View {
     const chosen = this.filters(space);
     const shown = Pbis.passing(entry.items, chosen, null);
     const filtered = Boolean(chosen.iteration || chosen.area || chosen.state);
+    const noun = this.kind === "tasks" ? "tasks" : "PBIs";
     const count = filtered ? `${shown.length} of ${entry.items.length}` : `${entry.items.length}`;
 
     return root
@@ -746,8 +773,8 @@ export default class Pbis extends View {
         .child(v_flex().id("pbis-list").absolute().inset_0().overflow_y_scroll().p(10).gap(8)
           .children(shown.map((p) => this.card(p, t, space, link)))
           .when(!entry.loading && !entry.error && !shown.length, (el) => el.child(div().text_color(t.dim)
-            .child(filtered ? "No open PBIs match these filters."
-              : this.mine ? "No open PBIs assigned to you." : "No open PBIs."))))
+            .child(filtered ? `No open ${noun} match these filters.`
+              : this.mine ? `No open ${noun} assigned to you.` : `No open ${noun}.`))))
         .child(Scrollbar.vertical("pbis-list").absolute().inset_0()));
   }
 }

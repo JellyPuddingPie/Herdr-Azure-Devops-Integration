@@ -24,6 +24,8 @@ Or copy the files by hand:
 3. The first time for an organization's tenant, click **Sign in with Microsoft**. Enter the code on the Microsoft page and pick the account that has access.
 4. Pick the project. The space is now linked to it.
 
+**PBIs / Tasks** at the top switches the list between PBIs and Tasks. A task card shows the PBI it belongs to. **Start agent** works for both.
+
 **Assigned to me** shows only your items. **Unlink** removes the link of the space.
 
 ## Plan new PBIs
