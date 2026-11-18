@@ -511,7 +511,13 @@ export default class Pbis extends View {
     this.starting[p.id] = true;
     cx.spawn(async (cx) => {
       try {
-        const md = await pbiMarkdown(link, p.id);
+        let md = await pbiMarkdown(link, p.id);
+        // A task alone says little: add its PBI in full, whose child list shows the other tasks.
+        const parentId = p.type === "Task" ? p.parent?.id : null;
+        if (parentId) {
+          const parent = await pbiMarkdown(link, parentId);
+          md += `\n---\n\n# Parent of this task\n\nThe task above is one task of this PBI. Use the PBI for context and acceptance criteria. The PBI's other tasks are listed under "Linked work items" as Child.\n\n${parent.replace(/^(#+) /gm, "#$1 ")}`;
+        }
         const dir = `${appHome()}/data/pbis-items`;
         try { await fs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
         const file = `${dir}/${orgName(link.org)}-${p.id}.md`;
@@ -521,6 +527,7 @@ export default class Pbis extends View {
           "",
           `The full work item (fields, acceptance criteria, comments, linked items such as its parent PBI) is in this file. Read it first: ${file}`,
           `You do not need to sign in to Azure DevOps to read it. Link: ${p.url}`,
+          ...(parentId ? ["", `This is one task of PBI #${parentId}${p.parent.title ? ` (${p.parent.title})` : ""}. The file also holds that PBI in full, with its other tasks. Do only this task, and use the PBI for context and acceptance criteria.`] : []),
         ].join("\n");
         run("tab.new", { space: space.id, name: `#${p.id}`, argv: ["claude", "--permission-mode", "plan"], task });
         after?.();
